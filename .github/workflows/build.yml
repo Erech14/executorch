@@ -2,65 +2,63 @@ name: Build ExecuTorch Android arm64-v8a
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
 
 jobs:
-  build-android:
-    runs-on: ubuntu-22.04
+  build:
+    runs-on: ubuntu-24.04
 
     env:
-      ANDROID_NDK_VERSION: "27.2.12479018"
-      ANDROID_API: "24"
+      ANDROID_ABI: arm64-v8a
+      ANDROID_PLATFORM: android-35
+      ANDROID_NDK_VERSION: 27.2.12479018
 
     steps:
       - name: Checkout ExecuTorch
         uses: actions/checkout@v4
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
         with:
-          submodules: recursive
+          distribution: temurin
+          java-version: '17'
+
+      - name: Check Java
+        run: |
+          java -version
+          javac -version
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK and NDK
+        run: |
+          yes | sdkmanager --licenses || true
+
+          sdkmanager \
+            "platform-tools" \
+            "platforms;${ANDROID_PLATFORM}" \
+            "build-tools;35.0.0" \
+            "ndk;${ANDROID_NDK_VERSION}"
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: '3.11'
 
-      - name: Install host dependencies
+      - name: Install build dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            ninja-build \
-            cmake \
-            unzip
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install cmake ninja
 
-      - name: Install Android SDK and NDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install NDK
+      - name: Configure Android toolchain
         run: |
-          sdkmanager --install \
-            "platforms;android-${ANDROID_API}" \
-            "build-tools;35.0.0" \
-            "ndk;${ANDROID_NDK_VERSION}"
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION"
 
-          echo "ANDROID_NDK=$ANDROID_SDK_ROOT/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/cmake/3.31.6/bin" >> "$GITHUB_PATH"
 
-      - name: Install Python dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install packaging setuptools wheel
-
-      - name: Install ExecuTorch
-        run: |
-          python -m pip install -e . --no-build-isolation
-
-      - name: Show toolchain
-        run: |
-          echo "ANDROID_NDK=$ANDROID_NDK"
-          $ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API}-clang++ \
-            --version
-
-      - name: Configure CMake
+      - name: Build ExecuTorch
         run: |
           mkdir -p build-android
           cd build-android
@@ -68,43 +66,41 @@ jobs:
           cmake .. \
             -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK/build/cmake/android.toolchain.cmake" \
-            -DANDROID_ABI=arm64-v8a \
-            -DANDROID_PLATFORM=android-${ANDROID_API} \
-            -DCMAKE_ANDROID_NDK="$ANDROID_NDK" \
-            -DCMAKE_ANDROID_ARCH_ABI=arm64-v8a \
-            -DCMAKE_INSTALL_PREFIX="$GITHUB_WORKSPACE/install"
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI="$ANDROID_ABI" \
+            -DANDROID_PLATFORM="$ANDROID_PLATFORM" \
+            -DANDROID_STL=c++_shared \
+            -DEXECUTORCH_BUILD_ANDROID=ON
 
-      - name: Build
-        run: |
-          cmake --build build-android \
-            --parallel "$(nproc)"
+          cmake --build . --parallel
 
-      - name: Find libraries
+      - name: Find generated libraries
         run: |
           echo "=== Shared libraries ==="
-          find build-android -type f \
-            \( -name "*.so" -o -name "*.a" \) \
-            -print
+          find . -type f -name "*.so" -print
 
-      - name: Prepare artifacts
+          echo "=== Static libraries ==="
+          find . -type f -name "*.a" -print
+
+      - name: Package ARM64 libraries
         run: |
-          mkdir -p artifact/lib/arm64-v8a
-          mkdir -p artifact/include
+          mkdir -p artifacts/arm64-v8a
 
-          find build-android -type f -name "*.so" \
-            -exec cp {} artifact/lib/arm64-v8a/ \;
+          find build-android \
+            -type f \
+            -name "*.so" \
+            -exec cp {} artifacts/arm64-v8a/ \;
 
-          if [ -d include ]; then
-            cp -r include/* artifact/include/
-          fi
+          find build-android \
+            -type f \
+            -name "*.a" \
+            -exec cp {} artifacts/arm64-v8a/ \;
 
-          echo "=== Artifact ==="
-          find artifact -type f -print
+          ls -lah artifacts/arm64-v8a
 
-      - name: Upload ExecuTorch Android libraries
+      - name: Upload libraries
         uses: actions/upload-artifact@v4
         with:
           name: executorch-android-arm64-v8a
-          path: artifact/
+          path: artifacts/arm64-v8a/
           if-no-files-found: error
