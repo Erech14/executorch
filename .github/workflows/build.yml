@@ -15,49 +15,82 @@ jobs:
       BUILD_TYPE: "Release"
 
     steps:
-      # ------------------------------------------------------------
-      # 1. Checkout ExecuTorch + ALL submodules
-      # ------------------------------------------------------------
+
+      # ============================================================
+      # 1. Checkout ExecuTorch
+      # ============================================================
+
       - name: Checkout ExecuTorch
         uses: actions/checkout@v4
         with:
           submodules: recursive
           fetch-depth: 0
 
-      # ------------------------------------------------------------
-      # 2. Java 17
-      # ------------------------------------------------------------
+
+      # ============================================================
+      # 2. JDK 17
+      # ============================================================
+
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      # ------------------------------------------------------------
-      # 3. Python
-      # ------------------------------------------------------------
+
+      # ============================================================
+      # 3. Python 3.11
+      # ============================================================
+
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      # ------------------------------------------------------------
+
+      # ============================================================
       # 4. Python dependencies
-      # ------------------------------------------------------------
+      # ============================================================
+
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install cmake ninja
 
-      # ------------------------------------------------------------
+          python -m pip install \
+            cmake \
+            ninja \
+            pyyaml
+
+          echo
+          echo "=== Python versions ==="
+          python --version
+          pip --version
+
+          echo
+          echo "=== PyYAML ==="
+          python -c "import yaml; print('PyYAML:', yaml.__version__)"
+
+          echo
+          echo "=== CMake ==="
+          cmake --version
+
+          echo
+          echo "=== Ninja ==="
+          ninja --version
+
+
+      # ============================================================
       # 5. Android SDK
-      # ------------------------------------------------------------
+      # ============================================================
+
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      # ------------------------------------------------------------
+
+      # ============================================================
       # 6. Android SDK + NDK
-      # ------------------------------------------------------------
+      # ============================================================
+
       - name: Install Android SDK and NDK
         run: |
           yes | sdkmanager --licenses >/dev/null || true
@@ -67,25 +100,39 @@ jobs:
             "platforms;android-${ANDROID_API}" \
             "ndk;${ANDROID_NDK_VERSION}"
 
-      # ------------------------------------------------------------
-      # 7. Environment
-      # ------------------------------------------------------------
+
+      # ============================================================
+      # 7. Android environment
+      # ============================================================
+
       - name: Configure Android environment
         run: |
           echo "ANDROID_HOME=${ANDROID_SDK_ROOT}" >> "$GITHUB_ENV"
-          echo "ANDROID_NDK_HOME=${ANDROID_SDK_ROOT}/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
 
-          echo "Android SDK: ${ANDROID_SDK_ROOT}"
-          echo "Android NDK: ${ANDROID_SDK_ROOT}/ndk/${ANDROID_NDK_VERSION}"
+          echo "ANDROID_NDK_HOME=${ANDROID_SDK_ROOT}/ndk/${ANDROID_NDK_VERSION}" \
+            >> "$GITHUB_ENV"
 
+          echo
+          echo "=== Java ==="
           java -version
-          python --version
-          cmake --version
-          ninja --version
 
-      # ------------------------------------------------------------
-      # 8. Verify submodules
-      # ------------------------------------------------------------
+          echo
+          echo "=== Android SDK ==="
+          echo "${ANDROID_SDK_ROOT}"
+
+          echo
+          echo "=== Android NDK ==="
+          echo "${ANDROID_SDK_ROOT}/ndk/${ANDROID_NDK_VERSION}"
+
+          echo
+          echo "=== NDK version ==="
+          cat "${ANDROID_SDK_ROOT}/ndk/${ANDROID_NDK_VERSION}/source.properties"
+
+
+      # ============================================================
+      # 8. Verify Git submodules
+      # ============================================================
+
       - name: Verify Git submodules
         run: |
           echo "=== Git submodules ==="
@@ -108,24 +155,50 @@ jobs:
           echo
           echo "=== FlatBuffers ==="
           test -d third-party/flatbuffers
+          test -n "$(find third-party/flatbuffers -mindepth 1 -maxdepth 1 -print -quit)"
           ls -lah third-party/flatbuffers
 
-      # ------------------------------------------------------------
-      # 9. Show Android toolchain
-      # ------------------------------------------------------------
-      - name: Verify Android NDK
+
+      # ============================================================
+      # 9. Verify Android compiler
+      # ============================================================
+
+      - name: Verify Android compiler
         run: |
-          echo "=== NDK ==="
-          ls -lah "$ANDROID_NDK_HOME"
+          CLANG="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/clang"
+
+          echo "=== Clang ==="
+          "${CLANG}" --version
 
           echo
-          echo "=== Clang ==="
-          "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" \
+          echo "=== Target ARM64 ==="
+          "${CLANG}" \
+            --target=aarch64-linux-android \
             --version
 
-      # ------------------------------------------------------------
-      # 10. Configure CMake
-      # ------------------------------------------------------------
+
+      # ============================================================
+      # 10. Verify ExecuTorch Python codegen
+      # ============================================================
+
+      - name: Verify ExecuTorch codegen
+        run: |
+          echo "=== ExecuTorch version ==="
+          grep -R "EXECUTORCH_VERSION" -n version* cmake 2>/dev/null || true
+
+          echo
+          echo "=== PyYAML import ==="
+          python -c "import yaml; print('yaml OK')"
+
+          echo
+          echo "=== Codegen module ==="
+          python -m codegen.tools.gen_oplist --help
+
+
+      # ============================================================
+      # 11. Configure CMake
+      # ============================================================
+
       - name: Configure CMake
         run: |
           rm -rf build-android
@@ -140,21 +213,27 @@ jobs:
             -DANDROID_PLATFORM="android-${ANDROID_API}" \
             -DANDROID_STL=c++_shared
 
-      # ------------------------------------------------------------
-      # 11. Build
-      # ------------------------------------------------------------
+
+      # ============================================================
+      # 12. Build ExecuTorch
+      # ============================================================
+
       - name: Build ExecuTorch
         run: |
           cmake \
             --build build-android \
             --parallel "$(nproc)"
 
-      # ------------------------------------------------------------
-      # 12. Find generated libraries
-      # ------------------------------------------------------------
+
+      # ============================================================
+      # 13. Find generated libraries
+      # ============================================================
+
       - name: Find libraries
         run: |
-          echo "=== Shared libraries ==="
+          echo "========================================"
+          echo "Shared libraries (.so)"
+          echo "========================================"
 
           find build-android \
             -type f \
@@ -162,18 +241,23 @@ jobs:
             -print
 
           echo
-          echo "=== Static libraries ==="
+          echo "========================================"
+          echo "Static libraries (.a)"
+          echo "========================================"
 
           find build-android \
             -type f \
             -name "*.a" \
             -print
 
-      # ------------------------------------------------------------
-      # 13. Verify architecture
-      # ------------------------------------------------------------
-      - name: Verify ARM64 libraries
+
+      # ============================================================
+      # 14. Collect libraries
+      # ============================================================
+
+      - name: Collect libraries
         run: |
+          rm -rf artifacts
           mkdir -p artifacts
 
           find build-android \
@@ -181,48 +265,93 @@ jobs:
             -name "*.so" \
             -exec cp {} artifacts/ \;
 
-          echo "=== Libraries ==="
+          echo
+          echo "=== Collected libraries ==="
           ls -lah artifacts/
 
-          echo
-          echo "=== Architecture ==="
-
-          for lib in artifacts/*.so; do
-            echo
-            echo ">>> $lib"
-            file "$lib"
-          done
-
-          echo
-          echo "Expected architecture: ARM aarch64"
-
-          if ls artifacts/*.so >/dev/null 2>&1; then
-            for lib in artifacts/*.so; do
-              file "$lib" | grep -E "ARM aarch64|ARM64|AArch64" || {
-                echo "ERROR: $lib is not ARM64"
-                exit 1
-              }
-            done
-          else
-            echo "ERROR: No .so files were produced"
+          if ! ls artifacts/*.so >/dev/null 2>&1; then
+            echo "ERROR: No .so files were produced!"
             exit 1
           fi
 
-      # ------------------------------------------------------------
-      # 14. Create archive
-      # ------------------------------------------------------------
+
+      # ============================================================
+      # 15. Verify ARM64 architecture
+      # ============================================================
+
+      - name: Verify ARM64 architecture
+        run: |
+          echo "========================================"
+          echo "Checking library architecture"
+          echo "========================================"
+
+          FAILED=0
+
+          for lib in artifacts/*.so; do
+            echo
+            echo ">>> ${lib}"
+
+            file "${lib}"
+
+            if file "${lib}" | grep -Eqi \
+              "ARM aarch64|ARM64|AArch64"; then
+
+              echo "OK: ARM64"
+
+            else
+
+              echo "ERROR: Not ARM64!"
+              FAILED=1
+
+            fi
+          done
+
+          if [ "${FAILED}" -ne 0 ]; then
+            echo
+            echo "ERROR: One or more libraries are not ARM64."
+            exit 1
+          fi
+
+          echo
+          echo "All libraries are ARM64."
+
+
+      # ============================================================
+      # 16. Show library sizes
+      # ============================================================
+
+      - name: Show library information
+        run: |
+          echo "========================================"
+          echo "Final libraries"
+          echo "========================================"
+
+          for lib in artifacts/*.so; do
+            echo
+            ls -lh "${lib}"
+            file "${lib}"
+          done
+
+
+      # ============================================================
+      # 17. Create archive
+      # ============================================================
+
       - name: Create archive
         run: |
           tar -czf \
-            executorch-android-${ANDROID_ABI}.tar.gz \
+            "executorch-android-${ANDROID_ABI}.tar.gz" \
             -C artifacts .
 
+          echo
           echo "=== Archive ==="
-          ls -lh executorch-android-${ANDROID_ABI}.tar.gz
+          ls -lh "executorch-android-${ANDROID_ABI}.tar.gz"
 
-      # ------------------------------------------------------------
-      # 15. Upload .so files
-      # ------------------------------------------------------------
+
+      # ============================================================
+      # 18. Upload .so libraries
+      # ============================================================
+
       - name: Upload Android libraries
         uses: actions/upload-artifact@v4
         with:
@@ -230,9 +359,11 @@ jobs:
           path: artifacts/*.so
           if-no-files-found: error
 
-      # ------------------------------------------------------------
-      # 16. Upload complete archive
-      # ------------------------------------------------------------
+
+      # ============================================================
+      # 19. Upload archive
+      # ============================================================
+
       - name: Upload archive
         uses: actions/upload-artifact@v4
         with:
