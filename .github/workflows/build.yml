@@ -4,135 +4,238 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
-    runs-on: ubuntu-24.04
+  build-android:
+    name: Build Android arm64-v8a
+    runs-on: ubuntu-latest
 
     env:
-      ANDROID_ABI: arm64-v8a
-      ANDROID_PLATFORM: android-35
-      ANDROID_NDK_VERSION: 27.2.12479018
+      ANDROID_API: "35"
+      ANDROID_NDK_VERSION: "27.2.12479018"
+      ANDROID_ABI: "arm64-v8a"
+      BUILD_TYPE: "Release"
 
     steps:
-      - name: Checkout
+      # ------------------------------------------------------------
+      # 1. Checkout ExecuTorch + ALL submodules
+      # ------------------------------------------------------------
+      - name: Checkout ExecuTorch
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
 
-      - name: Setup JDK 17
+      # ------------------------------------------------------------
+      # 2. Java 17
+      # ------------------------------------------------------------
+      - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
-          cache: gradle
+          java-version: "17"
 
-      - name: Check Java
+      # ------------------------------------------------------------
+      # 3. Python
+      # ------------------------------------------------------------
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # ------------------------------------------------------------
+      # 4. Python dependencies
+      # ------------------------------------------------------------
+      - name: Install Python dependencies
         run: |
-          echo "JAVA_HOME=$JAVA_HOME"
-          which java
-          java -version
+          python -m pip install --upgrade pip
+          pip install cmake ninja
 
-      - name: Setup Android environment
+      # ------------------------------------------------------------
+      # 5. Android SDK
+      # ------------------------------------------------------------
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      # ------------------------------------------------------------
+      # 6. Android SDK + NDK
+      # ------------------------------------------------------------
+      - name: Install Android SDK and NDK
         run: |
-          echo "ANDROID_HOME=$ANDROID_HOME"
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
-
-          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
-          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
-
-      - name: Install Android SDK / NDK
-        run: |
-          export JAVA_HOME="${JAVA_HOME_17_X64}"
-          export PATH="$JAVA_HOME/bin:$PATH"
-
-          echo "Using Java:"
-          java -version
-
-          echo "Using sdkmanager:"
-          which sdkmanager
-          sdkmanager --version
-
-          yes | sdkmanager --licenses || true
+          yes | sdkmanager --licenses >/dev/null || true
 
           sdkmanager \
             "platform-tools" \
-            "platforms;android-35" \
-            "build-tools;35.0.0" \
-            "ndk;27.2.12479018"
+            "platforms;android-${ANDROID_API}" \
+            "ndk;${ANDROID_NDK_VERSION}"
 
-      - name: Check NDK
+      # ------------------------------------------------------------
+      # 7. Environment
+      # ------------------------------------------------------------
+      - name: Configure Android environment
         run: |
-          ls -lah "$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION"
+          echo "ANDROID_HOME=${ANDROID_SDK_ROOT}" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=${ANDROID_SDK_ROOT}/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
 
-          test -f \
-            "$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION/build/cmake/android.toolchain.cmake"
+          echo "Android SDK: ${ANDROID_SDK_ROOT}"
+          echo "Android NDK: ${ANDROID_SDK_ROOT}/ndk/${ANDROID_NDK_VERSION}"
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install CMake and Ninja
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install cmake ninja
-
-      - name: Check tools
-        run: |
+          java -version
+          python --version
           cmake --version
           ninja --version
-          clang --version
 
-      - name: Configure ExecuTorch
+      # ------------------------------------------------------------
+      # 8. Verify submodules
+      # ------------------------------------------------------------
+      - name: Verify Git submodules
         run: |
-          mkdir -p build-android
+          echo "=== Git submodules ==="
+          git submodule status --recursive
+
+          echo
+          echo "=== third-party ==="
+          ls -lah third-party/
+
+          echo
+          echo "=== JSON ==="
+          test -f third-party/json/CMakeLists.txt
+          ls -lah third-party/json
+
+          echo
+          echo "=== gflags ==="
+          test -f third-party/gflags/CMakeLists.txt
+          ls -lah third-party/gflags
+
+          echo
+          echo "=== FlatBuffers ==="
+          test -d third-party/flatbuffers
+          ls -lah third-party/flatbuffers
+
+      # ------------------------------------------------------------
+      # 9. Show Android toolchain
+      # ------------------------------------------------------------
+      - name: Verify Android NDK
+        run: |
+          echo "=== NDK ==="
+          ls -lah "$ANDROID_NDK_HOME"
+
+          echo
+          echo "=== Clang ==="
+          "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" \
+            --version
+
+      # ------------------------------------------------------------
+      # 10. Configure CMake
+      # ------------------------------------------------------------
+      - name: Configure CMake
+        run: |
+          rm -rf build-android
 
           cmake \
             -S . \
             -B build-android \
             -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION/build/cmake/android.toolchain.cmake" \
-            -DANDROID_ABI="$ANDROID_ABI" \
-            -DANDROID_PLATFORM="$ANDROID_PLATFORM" \
+            -DCMAKE_BUILD_TYPE="${BUILD_TYPE}" \
+            -DCMAKE_TOOLCHAIN_FILE="${ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI="${ANDROID_ABI}" \
+            -DANDROID_PLATFORM="android-${ANDROID_API}" \
             -DANDROID_STL=c++_shared
 
-      - name: Build
+      # ------------------------------------------------------------
+      # 11. Build
+      # ------------------------------------------------------------
+      - name: Build ExecuTorch
         run: |
-          cmake --build build-android --parallel 2
+          cmake \
+            --build build-android \
+            --parallel "$(nproc)"
 
+      # ------------------------------------------------------------
+      # 12. Find generated libraries
+      # ------------------------------------------------------------
       - name: Find libraries
         run: |
-          echo "===== .so ====="
+          echo "=== Shared libraries ==="
+
           find build-android \
             -type f \
             -name "*.so" \
             -print
 
           echo
-          echo "===== .a ====="
+          echo "=== Static libraries ==="
+
           find build-android \
             -type f \
             -name "*.a" \
             -print
 
-      - name: Package
+      # ------------------------------------------------------------
+      # 13. Verify architecture
+      # ------------------------------------------------------------
+      - name: Verify ARM64 libraries
         run: |
-          mkdir -p artifacts/arm64-v8a
+          mkdir -p artifacts
 
           find build-android \
             -type f \
             -name "*.so" \
-            -exec cp {} artifacts/arm64-v8a/ \;
+            -exec cp {} artifacts/ \;
 
-          find build-android \
-            -type f \
-            -name "*.a" \
-            -exec cp {} artifacts/arm64-v8a/ \;
+          echo "=== Libraries ==="
+          ls -lah artifacts/
 
-          echo "===== ARTIFACT ====="
-          ls -lah artifacts/arm64-v8a
+          echo
+          echo "=== Architecture ==="
 
-      - name: Upload
+          for lib in artifacts/*.so; do
+            echo
+            echo ">>> $lib"
+            file "$lib"
+          done
+
+          echo
+          echo "Expected architecture: ARM aarch64"
+
+          if ls artifacts/*.so >/dev/null 2>&1; then
+            for lib in artifacts/*.so; do
+              file "$lib" | grep -E "ARM aarch64|ARM64|AArch64" || {
+                echo "ERROR: $lib is not ARM64"
+                exit 1
+              }
+            done
+          else
+            echo "ERROR: No .so files were produced"
+            exit 1
+          fi
+
+      # ------------------------------------------------------------
+      # 14. Create archive
+      # ------------------------------------------------------------
+      - name: Create archive
+        run: |
+          tar -czf \
+            executorch-android-${ANDROID_ABI}.tar.gz \
+            -C artifacts .
+
+          echo "=== Archive ==="
+          ls -lh executorch-android-${ANDROID_ABI}.tar.gz
+
+      # ------------------------------------------------------------
+      # 15. Upload .so files
+      # ------------------------------------------------------------
+      - name: Upload Android libraries
         uses: actions/upload-artifact@v4
         with:
-          name: executorch-android-arm64-v8a
-          path: artifacts/arm64-v8a
+          name: executorch-android-${{ env.ANDROID_ABI }}
+          path: artifacts/*.so
+          if-no-files-found: error
+
+      # ------------------------------------------------------------
+      # 16. Upload complete archive
+      # ------------------------------------------------------------
+      - name: Upload archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: executorch-android-${{ env.ANDROID_ABI }}-archive
+          path: executorch-android-${{ env.ANDROID_ABI }}.tar.gz
           if-no-files-found: error
