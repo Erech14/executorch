@@ -13,7 +13,7 @@ jobs:
       ANDROID_NDK_VERSION: 27.2.12479018
 
     steps:
-      - name: Checkout ExecuTorch
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup JDK 17
@@ -21,68 +21,99 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+          cache: gradle
 
       - name: Check Java
         run: |
+          echo "JAVA_HOME=$JAVA_HOME"
+          which java
           java -version
-          javac -version
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install Android SDK and NDK
+      - name: Setup Android environment
         run: |
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+
+      - name: Install Android SDK / NDK
+        run: |
+          export JAVA_HOME="${JAVA_HOME_17_X64}"
+          export PATH="$JAVA_HOME/bin:$PATH"
+
+          echo "Using Java:"
+          java -version
+
+          echo "Using sdkmanager:"
+          which sdkmanager
+          sdkmanager --version
+
           yes | sdkmanager --licenses || true
 
           sdkmanager \
             "platform-tools" \
-            "platforms;${ANDROID_PLATFORM}" \
+            "platforms;android-35" \
             "build-tools;35.0.0" \
-            "ndk;${ANDROID_NDK_VERSION}"
+            "ndk;27.2.12479018"
+
+      - name: Check NDK
+        run: |
+          ls -lah "$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION"
+
+          test -f \
+            "$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION/build/cmake/android.toolchain.cmake"
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install build dependencies
+      - name: Install CMake and Ninja
         run: |
-          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install --upgrade pip
           python -m pip install cmake ninja
 
-      - name: Configure Android toolchain
+      - name: Check tools
         run: |
-          echo "ANDROID_HOME=$ANDROID_HOME"
-          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION"
+          cmake --version
+          ninja --version
+          clang --version
 
-          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
-          echo "$ANDROID_HOME/cmake/3.31.6/bin" >> "$GITHUB_PATH"
-
-      - name: Build ExecuTorch
+      - name: Configure ExecuTorch
         run: |
           mkdir -p build-android
-          cd build-android
 
-          cmake .. \
+          cmake \
+            -S . \
+            -B build-android \
             -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_TOOLCHAIN_FILE="$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION/build/cmake/android.toolchain.cmake" \
             -DANDROID_ABI="$ANDROID_ABI" \
             -DANDROID_PLATFORM="$ANDROID_PLATFORM" \
-            -DANDROID_STL=c++_shared \
-            -DEXECUTORCH_BUILD_ANDROID=ON
+            -DANDROID_STL=c++_shared
 
-          cmake --build . --parallel
-
-      - name: Find generated libraries
+      - name: Build
         run: |
-          echo "=== Shared libraries ==="
-          find . -type f -name "*.so" -print
+          cmake --build build-android --parallel 2
 
-          echo "=== Static libraries ==="
-          find . -type f -name "*.a" -print
+      - name: Find libraries
+        run: |
+          echo "===== .so ====="
+          find build-android \
+            -type f \
+            -name "*.so" \
+            -print
 
-      - name: Package ARM64 libraries
+          echo
+          echo "===== .a ====="
+          find build-android \
+            -type f \
+            -name "*.a" \
+            -print
+
+      - name: Package
         run: |
           mkdir -p artifacts/arm64-v8a
 
@@ -96,11 +127,12 @@ jobs:
             -name "*.a" \
             -exec cp {} artifacts/arm64-v8a/ \;
 
+          echo "===== ARTIFACT ====="
           ls -lah artifacts/arm64-v8a
 
-      - name: Upload libraries
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: executorch-android-arm64-v8a
-          path: artifacts/arm64-v8a/
+          path: artifacts/arm64-v8a
           if-no-files-found: error
